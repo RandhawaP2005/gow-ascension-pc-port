@@ -51,6 +51,26 @@ list(REMOVE_ITEM GEN_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/gen/ppu_hle_nids.c
 # Lifted SPU images
 file(GLOB_RECURSE SPU_SOURCES "src/gen/spu/*.c" "src/spu_gen/*.c")
 
+# Indirect SPU branches must be tail calls: ordinary calls grow the host
+# stack on every guest loop iteration. Build the resolver with Clang here,
+# as the reference port does, rather than in the prebuilt runtime library.
+if(SPU_SOURCES)
+    if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR
+            "Lifted SPU code requires Clang's musttail dispatcher. "
+            "Configure a fresh build directory with clang-cl on Windows "
+            "(-DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl).")
+    endif()
+    set(SPU_DISPATCH_SOURCE "${PS3RECOMP_DIR}/runtime/spu/spu_dispatch_mt.c")
+    if(NOT EXISTS "${SPU_DISPATCH_SOURCE}")
+        message(FATAL_ERROR
+            "Missing ${SPU_DISPATCH_SOURCE}; initialize a compatible ps3recomp runtime first.")
+    endif()
+    list(APPEND SPU_SOURCES "${SPU_DISPATCH_SOURCE}")
+    set_property(SOURCE ${SPU_SOURCES} APPEND PROPERTY
+        COMPILE_DEFINITIONS SPU_USE_DISPATCH_MT)
+endif()
+
 # LAW 4: Compile generated code in Release /O2 / -O2 without full debug PDBs to protect disk space on C:
 if(MSVC)
     set_source_files_properties(${GEN_SOURCES} ${HLE_NID_TABLE} PROPERTIES COMPILE_FLAGS "/O2")

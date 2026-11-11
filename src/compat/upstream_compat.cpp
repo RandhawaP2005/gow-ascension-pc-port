@@ -880,7 +880,6 @@ extern "C" {
     void spu_wws_job_pm_spu_func_00001A60(spu_context* ctx);
     void spu_wws_job_pm_spu_func_00001BBC(spu_context* ctx);
     void spu_wrch(spu_context* ctx, uint32_t channel, u128 value);
-    void spu_ls_write128(spu_context* ctx, uint32_t lsa, u128 val);
     void spu_wws_job_pm_spu_func_00001CA0(spu_context* ctx);
     void spu_wws_job_pm_spu_func_00001E48(spu_context* ctx);
     void spu_wws_job_pm_spu_func_00002CA4(spu_context* ctx);
@@ -1047,13 +1046,16 @@ extern "C" {
         }
 
         // Vector 0x00A2C: save r78 to 0x1590, zero r78
-        memcpy(ctx->ls + 0x1590, &ctx->gpr[78], 16);
+        // Registers use host-native words; LS uses big-endian words. A raw
+        // memcpy byte-swaps each word when the guest restores this register.
+        spu_ls_write128(ctx, 0x1590u, ctx->gpr[78]);
         memset(&ctx->gpr[78], 0, sizeof(ctx->gpr[78]));
 
         // Call lifted interrupt handler at 0x40 (which executes 0x40->0x80->0x3FEC0->0x1990->0xD0->iret)
         spu_wws_job_pm_spu_func_00000040(ctx);
 
-        // Verify registers after round-trip
+        // A lifted C function can return with a trampoline pending. This is
+        // an intermediate snapshot, not proof that the guest executed iret.
         int diff_count = 0;
         for (int r = 0; r < 128; r++) {
             if (memcmp(&saved_gprs[r], &ctx->gpr[r], sizeof(u128)) != 0) {
@@ -1065,7 +1067,7 @@ extern "C" {
             }
         }
         if (s_irq_count <= 16) {
-            fprintf(stderr, "[wws-irq] SPU img=%d IRQ #%d complete: pc=0x%05X (srr0=0x%05X) diff_regs=%d loadJobState=%02X%02X%02X%02X\n",
+            fprintf(stderr, "[wws-irq] SPU img=%d IRQ #%d handler-step returned: pc=0x%05X (srr0=0x%05X) diff_regs=%d loadJobState=%02X%02X%02X%02X\n",
                     ctx->image_id, s_irq_count, ctx->pc, saved_srr0, diff_count,
                     ctx->ls[0x12A0], ctx->ls[0x12A1], ctx->ls[0x12A2], ctx->ls[0x12A3]);
         }
