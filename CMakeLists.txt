@@ -51,10 +51,31 @@ list(REMOVE_ITEM GEN_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/gen/ppu_hle_nids.c
 # Lifted SPU images
 file(GLOB_RECURSE SPU_SOURCES "src/gen/spu/*.c" "src/spu_gen/*.c")
 
+# Controlled WWS address experiment: do not replace baseline generated files.
+option(GOW_WWS_ADDRESS_CANDIDATE "Use the separately prepared LS-0xA00 WWS lift" OFF)
+set(GOW_WWS_CANDIDATE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/work/wws-ls-a00" CACHE PATH
+    "Candidate directory emitted by tools/prepare_wws_a00.py")
+if(GOW_WWS_ADDRESS_CANDIDATE)
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/prepare_wws_a00.py"
+                --verify "${GOW_WWS_CANDIDATE_DIR}"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        RESULT_VARIABLE WWS_VERIFY_RESULT OUTPUT_VARIABLE WWS_VERIFY_OUT ERROR_VARIABLE WWS_VERIFY_ERR)
+    if(NOT WWS_VERIFY_RESULT EQUAL 0)
+        message(FATAL_ERROR "WWS candidate validation failed.\n${WWS_VERIFY_OUT}${WWS_VERIFY_ERR}")
+    endif()
+    list(FILTER SPU_SOURCES EXCLUDE REGEX "/wws_job_pm/")
+    list(REMOVE_ITEM SPU_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/gen/spu/spu_workloads.c")
+    list(APPEND SPU_SOURCES
+        "${GOW_WWS_CANDIDATE_DIR}/spu/wws_job_pm/spu_recomp.c"
+        "${GOW_WWS_CANDIDATE_DIR}/spu/spu_workloads.c")
+    message(STATUS "WWS address candidate: ${GOW_WWS_CANDIDATE_DIR} (entry LS 0xA00, image 2)")
+endif()
+
 # Indirect SPU branches must be tail calls: ordinary calls grow the host
 # stack on every guest loop iteration. Build the resolver with Clang here,
 # as the reference port does, rather than in the prebuilt runtime library.
-if(SPU_SOURCES)
+if(SPU_SOURCES AND NOT GOW_WWS_ADDRESS_CANDIDATE)
     if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
         message(FATAL_ERROR
             "Lifted SPU code requires Clang's musttail dispatcher. "
@@ -136,6 +157,13 @@ target_include_directories(gow_ascension PRIVATE
 )
 
 target_link_libraries(gow_ascension PRIVATE "${PS3RECOMP_RUNTIME_LIB}")
+
+if(GOW_WWS_ADDRESS_CANDIDATE)
+    # The supplied runtime uses SPU_DRAIN/SPU_DIRECT, not the older
+    # SPU_USE_DISPATCH_MT integration. Keep its dispatch implementation intact.
+    target_compile_definitions(gow_ascension PRIVATE GOW_WWS_ADDRESS_CANDIDATE=1)
+    target_include_directories(gow_ascension BEFORE PRIVATE "${GOW_WWS_CANDIDATE_DIR}/spu")
+endif()
 
 if(GOW_ENABLE_RPCS3_RSX)
     include("${PS3RECOMP_DIR}/gpu/ps3rsx.cmake")

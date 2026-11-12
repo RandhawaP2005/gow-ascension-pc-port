@@ -15,6 +15,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
+#include <stdlib.h>
 
 extern "C" {
     extern uint32_t g_last_hle_nid;
@@ -999,6 +1000,28 @@ extern "C" {
     {
         if (!ctx) return;
         uint32_t pc = ctx->pc & SPU_LS_MASK;
+#if defined(GOW_WWS_ADDRESS_CANDIDATE)
+        // Rebased block 0x2500 contains the command load at 0x2504. Its
+        // preceding selb does not change r3/r61, so this observes that load's
+        // effective address without hand-editing generated code.
+        static const bool trace = getenv("GOW_WWS_LOAD_TRACE") != nullptr;
+        if (trace && ctx->policy_mode && is_wws_job_pm(ctx) && pc == 0x2500u &&
+            ctx->gpr[52]._u32[0] == 0x009FDF80u) {
+            static std::atomic<unsigned> samples{0};
+            unsigned n = samples.fetch_add(1, std::memory_order_relaxed);
+            if (n < 128) {
+                uint32_t base = ctx->gpr[3]._u32[0];
+                uint32_t offset = ctx->gpr[61]._u32[0];
+                uint32_t lsa = (base + offset) & SPU_LS_MASK & ~0xFu;
+                const uint8_t* p = ctx->ls + lsa;
+                uint32_t word = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+                                ((uint32_t)p[2] << 8) | p[3];
+                fprintf(stderr, "[wws-a00-load] sample=%u pc=0x%05X r3=0x%08X r61=0x%08X lsa=0x%05X word0=0x%08X%s\n",
+                        n, pc, base, offset, lsa, word, base == 0xD00u ? "" : " BASE-UNEXPECTED");
+            }
+        }
+        return; // Old PC-based probes below belong to the zero-based lift.
+#endif
         if (is_wws_job_pm(ctx) && ctx->gpr[52]._u32[0] == 0x70A9AF00u) {
             // Read clm only when r58 is known to hold the header quadword
             if (pc >= 0x1B08 && pc <= 0x1B90) {
@@ -1017,6 +1040,7 @@ extern "C" {
         }
     }
 
+#if !defined(GOW_WWS_ADDRESS_CANDIDATE)
     static void gow_wws_job_pm_3fec0_handler(spu_context* ctx)
     {
         if (!is_wws_job_pm(ctx)) return;
@@ -1091,6 +1115,19 @@ extern "C" {
 
         fprintf(stderr, "[ascension] Registered SPU overrides (img=2, wildcard=0): 0x3FEC0 shim return, IRQ 0x00A2C\n");
     }
+
+#else
+    void gow_register_spu_overrides(void)
+    {
+        static int logged = 0;
+        if (!logged++) {
+            // The candidate registers its real LS 0xA2C interrupt entry.
+            // Do not call the old offset-0x40 lift or replace the dynamic
+            // save/restore shim with a no-op. Let the runtime interpret it.
+            fprintf(stderr, "[ascension] WWS LS-0xA00 candidate: generated IRQ entry; legacy A2C/3FEC0 overrides disabled\n");
+        }
+    }
+#endif
 
     __attribute__((constructor(101))) static void gow_spu_overrides_ctor(void)
     {
